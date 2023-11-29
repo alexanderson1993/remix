@@ -51,6 +51,7 @@ test.beforeEach(async ({ context }) => {
   });
 });
 
+const nonceValue = "secretnonce";
 test.beforeAll(async () => {
   fixture = await createFixture({
     ////////////////////////////////////////////////////////////////////////////
@@ -59,29 +60,78 @@ test.beforeAll(async () => {
     ////////////////////////////////////////////////////////////////////////////
     files: {
       "app/routes/_index.tsx": js`
-        import { json } from "@remix-run/node";
-        import { useLoaderData, Link } from "@remix-run/react";
+        import { useLoaderData } from "@remix-run/react";
 
         export function loader() {
-          return json("pizza");
+          const data = "sup";
+          return {data};
         }
 
         export default function Index() {
-          let data = useLoaderData();
+          let {data} = useLoaderData<typeof loader>();
           return (
             <div>
               {data}
-              <Link to="/burgers">Other Route</Link>
             </div>
           )
         }
       `,
+      "app/routes/defer.tsx": js`
+        import { defer } from "@remix-run/node";
+        import { useLoaderData, Await } from "@remix-run/react";
+        import { Suspense } from "react";
 
-      "app/routes/burgers.tsx": js`
-        export default function Index() {
-          return <div>cheeseburger</div>;
+        export function loader() {
+          const promiseData = new Promise((resolve) => setTimeout(resolve, 100, "sup"));
+          return defer({promiseData});
+        }
+
+        export default function DeferredPage() {
+          let {promiseData} = useLoaderData<typeof loader>();
+          return (
+            <div>
+              <Suspense>
+                <Await resolve={promiseData}>{(data) => <div>{data}</div>}</Await>
+              </Suspense>
+            </div>
+          )
         }
       `,
+      "app/root.tsx": js`
+      import { cssBundleHref } from '@remix-run/css-bundle';
+      import type { LinksFunction } from '@remix-run/node';
+      import {
+        Links,
+        LiveReload,
+        Meta,
+        Outlet,
+        Scripts,
+        ScrollRestoration,
+      } from '@remix-run/react';
+
+      export const links: LinksFunction = () => [
+        ...(cssBundleHref ? [{ rel: 'stylesheet', href: cssBundleHref }] : []),
+      ];
+
+      export default function App() {
+        return (
+          <html lang="en">
+            <head>
+              <meta charSet="utf-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <Meta />
+              <Links />
+            </head>
+            <body>
+              <Outlet />
+              <ScrollRestoration nonce="${nonceValue}" />
+              <Scripts nonce="${nonceValue}" />
+              <LiveReload nonce="${nonceValue}" />
+            </body>
+          </html>
+        );
+      }
+`,
     },
   });
 
@@ -98,16 +148,43 @@ test.afterAll(() => {
 // add a good description for what you expect Remix to do 👇🏽
 ////////////////////////////////////////////////////////////////////////////////
 
-test("[description of what you expect it to do]", async ({ page }) => {
+test("all script tags on a non-defer page should include the nonce from the <Scripts/> component", async ({
+  page,
+}) => {
   let app = new PlaywrightFixture(appFixture, page);
-  // You can test any request your app might get using `fixture`.
-  let response = await fixture.requestDocument("/");
-  expect(await response.text()).toMatch("pizza");
+
+  await app.goto("/");
+  await page.waitForSelector("text=sup");
+
+  await page.$$("script").then(async (scripts) => {
+    expect(scripts.length).toBeGreaterThan(0);
+    return Promise.all(
+      scripts.map(async (script) => {
+        // Every script tag should have a nonce attribute
+        // for content security policy to work
+        expect(await script.getAttribute("nonce")).toEqual(nonceValue);
+      })
+    );
+  });
+});
+test("all script tags on a defer page should include the nonce from the <Scripts/> component", async ({
+  page,
+}) => {
+  let app = new PlaywrightFixture(appFixture, page);
 
   // If you need to test interactivity use the `app`
-  await app.goto("/");
-  await app.clickLink("/burgers");
-  await page.waitForSelector("text=cheeseburger");
+  await app.goto("/defer");
+  await page.waitForSelector("text=sup");
+  await page.$$("script").then(async (scripts) => {
+    expect(scripts.length).toBeGreaterThan(0);
+    return Promise.all(
+      scripts.map(async (script) => {
+        // Every script tag should have a nonce attribute
+        // for content security policy to work
+        expect(await script.getAttribute("nonce")).toEqual(nonceValue);
+      })
+    );
+  });
 
   // If you're not sure what's going on, you can "poke" the app, it'll
   // automatically open up in your browser for 20 seconds, so be quick!
